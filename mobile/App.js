@@ -1,137 +1,232 @@
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Button, ScrollView, StyleSheet, Text, View } from 'react-native';
-import axios from 'axios';
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const dotenv = require('dotenv');
 
-const API_URL = 'http://10.0.2.2:3000';
+dotenv.config();
 
-export default function App() {
-  const [matches, setMatches] = useState([]);
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-  const loadData = async () => {
-    try {
-      setLoading(true);
-      const matchesRes = await axios.get(`${API_URL}/api/live-scores`);
-      const userRes = await axios.get(`${API_URL}/api/users/1`);
+app.use(cors());
+app.use(express.json());
 
-      setMatches(matchesRes.data.matches || []);
-      setUser(userRes.data.user);
-    } catch (error) {
-      console.log(error);
-      Alert.alert('Connection error', 'Please start the backend server first.');
-    } finally {
-      setLoading(false);
-    }
+const users = [
+  { id: 1, name: 'Murad', email: 'murad@example.com', password: '123456', points: 1000 },
+  { id: 2, name: 'Rafi', email: 'rafi@example.com', password: '123456', points: 850 },
+  { id: 3, name: 'Nadia', email: 'nadia@example.com', password: '123456', points: 1200 }
+];
+
+const matches = [
+  {
+    id: 'match-101',
+    homeTeam: 'Bangladesh',
+    awayTeam: 'India',
+    startTime: '2026-11-13T18:30:00Z',
+    status: 'LIVE',
+    score: '142/3',
+    winner: 'Bangladesh'
+  },
+  {
+    id: 'match-102',
+    homeTeam: 'Pakistan',
+    awayTeam: 'England',
+    startTime: '2026-11-13T20:00:00Z',
+    status: 'UPCOMING',
+    score: 'Toss not done',
+    winner: 'Pakistan'
+  },
+  {
+    id: 'match-103',
+    homeTeam: 'Sri Lanka',
+    awayTeam: 'Australia',
+    startTime: '2026-11-14T12:00:00Z',
+    status: 'UPCOMING',
+    score: 'Not started',
+    winner: 'Sri Lanka'
+  }
+];
+
+const predictions = [];
+
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, message: 'API is running' });
+});
+
+app.post('/api/register', (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ success: false, message: 'Name, email and password are required' });
+  }
+
+  const existingUser = users.find((user) => user.email.toLowerCase() === email.toLowerCase());
+
+  if (existingUser) {
+    return res.status(409).json({ success: false, message: 'User already exists' });
+  }
+
+  const newUser = {
+    id: users.length ? Math.max(...users.map((u) => u.id)) + 1 : 1,
+    name,
+    email,
+    password,
+    points: 1000
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  users.push(newUser);
 
-  const handlePredict = async (matchId, selectedTeam) => {
-    try {
-      const res = await axios.post(`${API_URL}/api/predict`, {
-        userId: 1,
-        matchId,
-        selectedTeam,
-        points: 50
+  return res.status(201).json({ success: true, user: { id: newUser.id, name: newUser.name, email: newUser.email, points: newUser.points } });
+});
+
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: 'Email and password are required' });
+  }
+
+  const user = users.find((item) => item.email.toLowerCase() === email.toLowerCase() && item.password === password);
+
+  if (!user) {
+    return res.status(401).json({ success: false, message: 'Invalid email or password' });
+  }
+
+  return res.json({
+    success: true,
+    user: { id: user.id, name: user.name, email: user.email, points: user.points }
+  });
+});
+
+app.get('/api/users/:id', (req, res) => {
+  const user = users.find((u) => u.id === Number(req.params.id));
+
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found' });
+  }
+
+  return res.json({ success: true, user: { id: user.id, name: user.name, email: user.email, points: user.points } });
+});
+
+app.get('/api/matches', (req, res) => {
+  return res.json({ success: true, matches });
+});
+
+app.get('/api/live-scores', async (req, res) => {
+  try {
+    const apiKey = process.env.CRICAPI_KEY;
+
+    if (!apiKey || apiKey === 'YOUR_API_KEY') {
+      return res.json({
+        success: true,
+        source: 'demo',
+        matches
       });
-
-      Alert.alert('Prediction saved', res.data.message);
-      loadData();
-    } catch (error) {
-      Alert.alert('Prediction failed', error.response?.data?.message || 'Something went wrong');
     }
+
+    const response = await axios.get('https://api.cricapi.com/v1/currentMatches', {
+      params: { apikey: apiKey }
+    });
+
+    return res.json({ success: true, source: 'cricapi', matches: response.data.data || [] });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Live scores could not be loaded',
+      details: error.message
+    });
+  }
+});
+
+app.post('/api/predict', (req, res) => {
+  const { userId, matchId, selectedTeam, points } = req.body;
+
+  if (!userId || !matchId || !selectedTeam || !points) {
+    return res.status(400).json({ success: false, message: 'Incomplete data' });
+  }
+
+  const user = users.find((u) => u.id === Number(userId));
+  const match = matches.find((item) => item.id === matchId);
+
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found' });
+  }
+
+  if (!match) {
+    return res.status(404).json({ success: false, message: 'Match not found' });
+  }
+
+  if (Number(points) <= 0 || user.points < Number(points)) {
+    return res.status(400).json({ success: false, message: 'Not enough free points' });
+  }
+
+  if (selectedTeam !== match.homeTeam && selectedTeam !== match.awayTeam) {
+    return res.status(400).json({ success: false, message: 'Invalid team selection' });
+  }
+
+  user.points -= Number(points);
+
+  const newPrediction = {
+    id: predictions.length + 1,
+    userId: Number(userId),
+    matchId,
+    selectedTeam,
+    pointsUsed: Number(points),
+    status: 'PENDING',
+    createdAt: new Date().toISOString()
   };
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" />
-        <Text>Loading app data...</Text>
-      </View>
-    );
+  predictions.push(newPrediction);
+
+  return res.json({
+    success: true,
+    message: 'Prediction created successfully',
+    remainingPoints: user.points,
+    prediction: newPrediction
+  });
+});
+
+app.get('/api/predictions/:userId', (req, res) => {
+  const userPredictions = predictions.filter((prediction) => prediction.userId === Number(req.params.userId));
+  return res.json({ success: true, predictions: userPredictions });
+});
+
+app.get('/api/leaderboard', (req, res) => {
+  const leaderboard = [...users]
+    .sort((a, b) => b.points - a.points)
+    .map((user, index) => ({ rank: index + 1, ...user }));
+
+  return res.json({ success: true, leaderboard });
+});
+
+app.post('/api/admin/settle-match', (req, res) => {
+  const { matchId, winner } = req.body;
+
+  const match = matches.find((item) => item.id === matchId);
+  if (!match) {
+    return res.status(404).json({ success: false, message: 'Match not found' });
   }
 
-  return (
-    <ScrollView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>MAHBUB Prediction</Text>
-        <Text style={styles.subTitle}>Virtual points app</Text>
-        <Text style={styles.points}>Available points: {user?.points ?? 0}</Text>
-      </View>
+  match.winner = winner;
+  match.status = 'FINISHED';
 
-      {matches.map((match) => (
-        <View key={match.id} style={styles.card}>
-          <Text style={styles.matchTitle}>{match.homeTeam} vs {match.awayTeam}</Text>
-          <Text style={styles.matchInfo}>Status: {match.status}</Text>
-          <Text style={styles.matchInfo}>Score: {match.score}</Text>
+  const relatedPredictions = predictions.filter((prediction) => prediction.matchId === matchId && prediction.status === 'PENDING');
 
-          <View style={styles.buttonRow}>
-            <Button title={match.homeTeam} onPress={() => handlePredict(match.id, match.homeTeam)} />
-            <Button title={match.awayTeam} onPress={() => handlePredict(match.id, match.awayTeam)} />
-          </View>
-        </View>
-      ))}
-    </ScrollView>
-  );
-}
+  relatedPredictions.forEach((prediction) => {
+    const user = users.find((u) => u.id === prediction.userId);
+    if (!user) return;
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5'
-  },
-  centered: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  header: {
-    padding: 24,
-    backgroundColor: '#0f172a',
-  },
-  title: {
-    fontSize: 28,
-    color: '#ffffff',
-    fontWeight: '700'
-  },
-  subTitle: {
-    marginTop: 6,
-    color: '#cbd5e1',
-    fontSize: 16
-  },
-  points: {
-    marginTop: 12,
-    color: '#facc15',
-    fontSize: 18,
-    fontWeight: '600'
-  },
-  card: {
-    margin: 16,
-    padding: 18,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3
-  },
-  matchTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginBottom: 8
-  },
-  matchInfo: {
-    fontSize: 14,
-    color: '#475569',
-    marginBottom: 6
-  },
-  buttonRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12
-  }
+    if (prediction.selectedTeam === winner) {
+      user.points += prediction.pointsUsed * 2;
+      prediction.status = 'WON';
+    } else {
+      prediction.status = 'LOST';
+    }
+  });
+
+  return res.json({ success: true, message: 'Match settled', match, predictions: relatedPredictions });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
